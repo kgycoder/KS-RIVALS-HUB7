@@ -1,4 +1,4 @@
--- KS-Rivals Script Hub (Full Auto Integration & HUB2 Update + Rage Bot - Fixed + Optimized + Loading System v2.2 + Team Check + New Silent Aim)
+-- KS-Rivals Script Hub (Full Auto Integration & HUB2 Update + Rage Bot - Fixed + Optimized + Loading System v2.2 + Team Check)
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -136,10 +136,10 @@ local nrOriginalStartShooting = nil
 local nrOriginal_LocalTracers = nil
 local nrCrosshairProtected = false
 
--- New Silent Aim Variables
+-- Silent Aim 전용 변수
 local silentAimActive = false
 local oldNamecall = nil
-local mt = nil
+local metaTableHooked = false
 
 local function saveConfig()
     local config = {
@@ -301,46 +301,52 @@ local function createNotification(text)
 end
 
 -- ============================================
--- NEW SILENT AIM SYSTEM (Raycast Spoofing)
+-- SILENT AIM SYSTEM (NEW RAYCAST HOOK)
 -- ============================================
 
-local function isVisible(p)
-    if not p.Character or not p.Character:FindFirstChild("Head") then return false end
+local function isVisible(targetHead)
+    if not targetHead then return false end
+    local character = LocalPlayer.Character
+    if not character then return false end
+    
     local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, p.Character}
+    rayParams.FilterDescendantsInstances = {character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    
     local origin = Camera.CFrame.Position
-    local dir = (p.Character.Head.Position - origin)
-    local ray = workspace:Raycast(origin, dir, rayParams)
-    return ray == nil
+    local direction = (targetHead.Position - origin)
+    local ray = workspace:Raycast(origin, direction, rayParams)
+    
+    if not ray then return true end
+    return ray.Instance:IsDescendantOf(targetHead.Parent)
 end
 
 local function getClosestPlayerForSilentAim()
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+    if not SILENT_AIM_ENABLED then return nil end
+    
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
         return nil
     end
     
     local closestPlayer = nil
-    local closestDistance = math.huge
+    local shortestScreenDistance = math.huge
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     
-    for _, otherPlayer in ipairs(Players:GetPlayers()) do
-        if otherPlayer ~= LocalPlayer and isEnemy(otherPlayer) and otherPlayer.Character then
-            local otherCharacter = otherPlayer.Character
-            local otherHead = otherCharacter:FindFirstChild("Head")
-            local otherHumanoid = otherCharacter:FindFirstChild("Humanoid")
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and isEnemy(player) and player.Character then
+            local head = player.Character:FindFirstChild("Head")
+            local humanoid = player.Character:FindFirstChild("Humanoid")
             
-            if otherHead and otherHumanoid and otherHumanoid.Health > 0 then
-                if isVisible(otherPlayer) then
-                    local screenPos, onScreen = Camera:WorldToScreenPoint(otherHead.Position)
-                    if onScreen then
-                        local viewportSize = Camera.ViewportSize
-                        local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
-                        local distanceFromCenter = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-                        
-                        if distanceFromCenter < closestDistance then
-                            closestDistance = distanceFromCenter
-                            closestPlayer = otherPlayer
-                        end
+            if head and humanoid and humanoid.Health > 0 then
+                local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                
+                if onScreen and isVisible(head) then
+                    local screenDistance = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                    
+                    if screenDistance < shortestScreenDistance then
+                        shortestScreenDistance = screenDistance
+                        closestPlayer = player
                     end
                 end
             end
@@ -368,39 +374,35 @@ local function createFakeRaycastResult(targetHead, rayOrigin)
 end
 
 local function shouldHookRaycast(origin, direction, raycastParams)
-    if not raycastParams then
-        return false
-    end
+    if not SILENT_AIM_ENABLED then return false end
+    if not raycastParams then return false end
     
     if raycastParams.FilterType ~= Enum.RaycastFilterType.Include then
         return false
     end
     
     local rayDistance = direction.Magnitude
-    if rayDistance < 10 then
-        return false
-    end
+    if rayDistance < 10 then return false end
     
     local camPos = Camera.CFrame.Position
     local distanceFromCamera = (origin - camPos).Magnitude
     
-    if distanceFromCamera > 5 then
-        return false
-    end
+    if distanceFromCamera > 5 then return false end
     
     return true
 end
 
-local function initSilentAim()
-    local success, metatable = pcall(function()
+local function setupSilentAimHook()
+    if metaTableHooked then return end
+    
+    local success, mt = pcall(function()
         return getrawmetatable(game)
     end)
     
     if not success then
-        metatable = getmetatable(game)
+        mt = getmetatable(game)
     end
     
-    mt = metatable
     oldNamecall = mt.__namecall
     
     pcall(function()
@@ -420,7 +422,7 @@ local function initSilentAim()
             local direction = args[2]
             local raycastParams = args[3]
             
-            if silentAimActive and shouldHookRaycast(origin, direction, raycastParams) then
+            if shouldHookRaycast(origin, direction, raycastParams) then
                 local closestPlayer = getClosestPlayerForSilentAim()
                 if closestPlayer and closestPlayer.Character then
                     local targetHead = closestPlayer.Character:FindFirstChild("Head")
@@ -442,7 +444,7 @@ local function initSilentAim()
             local direction = args[2]
             local raycastParams = args[3]
             
-            if silentAimActive and shouldHookRaycast(origin, direction, raycastParams) then
+            if shouldHookRaycast(origin, direction, raycastParams) then
                 local closestPlayer = getClosestPlayerForSilentAim()
                 if closestPlayer and closestPlayer.Character then
                     local targetHead = closestPlayer.Character:FindFirstChild("Head")
@@ -464,17 +466,11 @@ local function initSilentAim()
     pcall(function()
         make_readonly(mt)
     end)
+    
+    metaTableHooked = true
 end
 
-local function enableSilentAim()
-    silentAimActive = true
-    createNotification("Silent Aim Enabled")
-end
-
-local function disableSilentAim()
-    silentAimActive = false
-    createNotification("Silent Aim Disabled")
-end
+setupSilentAimHook()
 
 -- ============================================
 -- UI SETUP
@@ -660,6 +656,8 @@ local function HideKeybindInfo()
     }):Play()
     
     task.wait(0.15)
+    
+    local currentHeight = KeybindInfoFrame.Size.Y.Offset
     
     local slideTween = TweenService:Create(KeybindInfoFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
         Size = UDim2.new(0, 0, 0, currentHeight),
@@ -1883,7 +1881,8 @@ RunService.RenderStepped:Connect(function()
     if not AUTO_AIM_ENABLED or MainFrame.Visible then return end
     local targetFound = false
     if AUTO_AIM_MODE == "Silent" then
-        targetFound = false
+        local t = getClosestPlayerForSilentAim()
+        if t then targetFound = true end
     elseif AUTO_AIM_MODE == "Aim" then
         local target = Mouse.Target
         if target and target.Parent then
@@ -1984,14 +1983,7 @@ local function createESP(player)
     if player.Character then onChar(player.Character) end
 end
 
-UIHandlers.UpdateSilentAim = CreateToggle("enabled (silent aim)", AimPage, function(v)SILENT_AIM_ENABLED = v
-    if v then
-        enableSilentAim()
-    else
-        disableSilentAim()
-    end
-end, nil, SILENT_AIM_ENABLED)
-
+UIHandlers.UpdateSilentAim = CreateToggle("enabled (silent aim)", AimPage, function(v) SILENT_AIM_ENABLED = v end, nil, SILENT_AIM_ENABLED)
 UIHandlers.UpdateAimLock = CreateToggle("Aim Lock", AimPage, function(v) 
     AIM_LOCK_ENABLED = v
     UpdateKeybindInfo()
@@ -2001,7 +1993,6 @@ UIHandlers.UpdateAimLock = CreateToggle("Aim Lock", AimPage, function(v)
         ShowKeybindInfo()
     end
 end, "Keybind", AIM_LOCK_ENABLED)
-
 UIHandlers.UpdateAutoAim = CreateToggle("Auto Aim", AimPage, function(v)
     AUTO_AIM_ENABLED = v
     if v then
@@ -2208,30 +2199,21 @@ local function RunLoadingSequence()
     end
     UpdateLoadingProgress(25, charReady and "Character Ready" or "Character Timeout")
     task.wait(0.15)
-    UpdateLoadingProgress(30, "Initializing Silent Aim...")
-    pcall(function()
-        initSilentAim()
-        if SILENT_AIM_ENABLED then
-            enableSilentAim()
-        end
-    end)
-    UpdateLoadingProgress(35, "Silent Aim Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(40, "Initializing ESP System...")
+    UpdateLoadingProgress(30, "Initializing ESP System...")
     for _, p in pairs(Players:GetPlayers()) do
         pcall(function() createESP(p) end)
     end
     Players.PlayerAdded:Connect(createESP)
-    UpdateLoadingProgress(50, "ESP System Ready")
+    UpdateLoadingProgress(40, "ESP System Ready")
     task.wait(0.15)
-    UpdateLoadingProgress(55, "Setting up Player Tracking...")
+    UpdateLoadingProgress(45, "Setting up Player Tracking...")
     for _, p in ipairs(Players:GetPlayers()) do
         pcall(function() setupPlayerTracking(p) end)
     end
     Players.PlayerAdded:Connect(setupPlayerTracking)
-    UpdateLoadingProgress(65, "Player Tracking Ready")
+    UpdateLoadingProgress(55, "Player Tracking Ready")
     task.wait(0.15)
-    UpdateLoadingProgress(70, "Loading Weapon Modules...")
+    UpdateLoadingProgress(60, "Loading Weapon Modules...")
     if NO_COOL_TIME_ENABLED then
         pcall(function()
             lastCooldownRemoval = 0
@@ -2251,19 +2233,19 @@ local function RunLoadingSequence()
             enableNoRecoil()
         end)
     end
-    UpdateLoadingProgress(80, "Weapon Modules Ready")
+    UpdateLoadingProgress(70, "Weapon Modules Ready")
     task.wait(0.15)
-    UpdateLoadingProgress(85, "Loading External Scripts...")
+    UpdateLoadingProgress(75, "Loading External Scripts...")
     if SKIN_CHANGER_ENABLED then
         local success = pcall(function()
             loadstring(game:HttpGet("https://raw.githubusercontent.com/kgycoder/Rivals-Skin-changer/refs/heads/main/Rivals-Skin%20changer", true))()
         end)
-        UpdateLoadingProgress(90, success and "Skin Changer Loaded" or "Skin Changer Failed")
+        UpdateLoadingProgress(82, success and "Skin Changer Loaded" or "Skin Changer Failed")
     else
-        UpdateLoadingProgress(90, "External Scripts Skipped")
+        UpdateLoadingProgress(82, "External Scripts Skipped")
     end
     task.wait(0.15)
-    UpdateLoadingProgress(93, "Initializing Auto Features...")
+    UpdateLoadingProgress(88, "Initializing Auto Features...")
     if FULL_AUTO_ENABLED then
         pcall(function()
             local character = LocalPlayer.Character
@@ -2281,9 +2263,9 @@ local function RunLoadingSequence()
     if AUTO_MATCH_ENABLED then pcall(attemptJoinMatch) end
     if RAGE_BOT_ENABLED then pcall(rbUpdateCharacterRefs) end
     if THIRD_PERSON_ENABLED then pcall(enableThirdPerson) end
-    UpdateLoadingProgress(97, "Auto Features Ready")
+    UpdateLoadingProgress(95, "Auto Features Ready")
     task.wait(0.15)
-    UpdateLoadingProgress(99, "Applying Configuration...")
+    UpdateLoadingProgress(98, "Applying Configuration...")
     updateESPStates()
     ShowTab("Aim")
     task.wait(0.1)
@@ -2300,14 +2282,6 @@ if FULL_AUTO_ENABLED then
     MainFrame.Visible = false
     LoadingOverlay.Visible = false
     ContentContainer.Visible = true
-    
-    pcall(function()
-        initSilentAim()
-        if SILENT_AIM_ENABLED then
-            enableSilentAim()
-        end
-    end)
-    
     for _, p in pairs(Players:GetPlayers()) do
         pcall(function() createESP(p) end)
         pcall(function() setupPlayerTracking(p) end)
